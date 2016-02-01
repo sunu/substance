@@ -1,18 +1,21 @@
 'use strict';
 
+var $ = require('../util/jquery');
 var isObject = require('lodash/lang/isObject');
 var isEqual = require('lodash/lang/isEqual');
 var each = require('lodash/collection/each');
+var platform = require('../util/platform');
 var Registry = require('../util/Registry');
-var SurfaceSelection = require('./SurfaceSelection');
 var Document = require('../model/Document');
 var Selection = require('../model/Selection');
-var Component = require('./Component');
-var Clipboard = require('./Clipboard');
-var $$ = Component.$$;
-var $ = require('../util/jquery');
 var copySelection = require('../model/transform/copySelection');
-var platform = require('../util/platform');
+var insertText = require('../model/transform/insertText');
+var deleteSelection = require('../model/transform/deleteSelection');
+var DOMSelection = require('./DOMSelection');
+var Clipboard = require('./Clipboard');
+var Component = require('./Component');
+var $$ = Component.$$;
+var UnsupportedNode = require('./UnsupportedNode');
 
 /**
    Abstract interface for editing components.
@@ -23,37 +26,32 @@ var platform = require('../util/platform');
    @abstract
 */
 function Surface() {
-  Component.apply(this, arguments);
+  Surface.super.apply(this, arguments);
 
-  var controller = this.getController();
-
-  // TODO: we need a DocumentSession instance
-
-  if (!controller) {
+  this.controller = this.context.controller || this.props.controller;
+  if (!this.controller) {
     throw new Error('Surface needs a valid controller');
   }
-  if (!this.props.name) {
+  this.documentSession = this.controller.getDocumentSession();
+  this.name = this.props.name;
+  if (!this.name) {
     throw new Error('No name provided');
   }
 
-  this.documentSession = controller.getDocumentSession();
-  this.name = this.props.name;
   this.clipboard = new Clipboard(this);
-
   var doc = this.documentSession.getDocument();
+
+  this.domSelection = null;
+
+  this.onDomMutations = this.onDomMutations.bind(this);
+  this.domObserver = new window.MutationObserver(this.onDomMutations);
+  this.domObserverConfig = { subtree: true, characterData: true };
+  this.skipNextObservation = false;
 
   // HACK: we need to listen to mousup on document
   // to catch events outside the surface
   this.$document = $(window.document);
   this.onMouseUp = this.onMouseUp.bind(this);
-  // <----
-
-  this.surfaceSelection = null;
-  this.dragging = false;
-  this.onDomMutations = this.onDomMutations.bind(this);
-  this.domObserver = new window.MutationObserver(this.onDomMutations);
-  this.domObserverConfig = { subtree: true, characterData: true };
-  this.skipNextObservation = false;
 
   // set when editing is enabled
   this.enabled = true;
@@ -61,15 +59,11 @@ function Surface() {
   this.textTypes = this.props.textTypes;
   this._initializeCommandRegistry(this.props.commands);
 
-  controller.registerSurface(this);
+  this.controller.registerSurface(this);
 
   // a registry for TextProperties which allows us to dispatch changes
   this._textProperties = {};
   this._annotations = {};
-
-  // true if the ContentEditable is used for selection rendering
-  // otherwise the selection is rendered by us
-  this._DOMSelection = false;
 
   doc.on('document:changed', this.onDocumentChange, this);
 }
@@ -77,20 +71,18 @@ function Surface() {
 Surface.Prototype = function() {
 
   this.render = function() {
-    var shouldEnableSurface = this.shouldEnableSurface();
-
-    var el = $$("div")
-      .addClass('surface')
+    var tagName = this.props.tagName || 'div';
+    var el = $$(tagName)
+      .addClass('sc-surface')
       .attr('spellCheck', false);
 
-    if (shouldEnableSurface) {
+    if (this.isEditable()) {
       // Keyboard Events
       el.on('keydown', this.onKeyDown);
       // OSX specific handling of dead-keys
       if (!platform.isIE) {
         el.on('compositionstart', this.onCompositionStart);
       }
-
       // Note: TextEvent in Chrome/Webkit is the easiest for us
       // as it contains the actual inserted string.
       // Though, it is not available in FF and not working properly in IE
@@ -100,8 +92,10 @@ Surface.Prototype = function() {
       } else {
         el.on('keypress', this.onTextInputShim);
       }
+    }
 
-     // Mouse Events
+    if (!this.isReadonly()) {
+      // Mouse Events
       el.on('mousedown', this.onMouseDown);
 
       // disable drag'n'drop
@@ -117,28 +111,20 @@ Surface.Prototype = function() {
     return el;
   };
 
-  this.shouldEnableSurface = function() {
-    return true;
-  };
-
   this.didMount = function() {
-    var doc = this.getDocument();
-    this.surfaceSelection = new SurfaceSelection(this.el, doc, this.getContainer());
-    this.clipboard.didMount();
-    // Document Change Events
-    this.domObserver.observe(this.el, this.domObserverConfig);
+    if (!this.isReadonly()) {
+      this.domSelection = new DOMSelection(this.el, this.getDocument(), this.getContainer());
+      this.clipboard.didMount();
+      // Document Change Events
+      this.domObserver.observe(this.el, this.domObserverConfig);
+    }
   };
 
   this.dispose = function() {
     var doc = this.getDocument();
-    this.setSelection(null);
-    this.textPropertyManager.dispose();
-    this.domObserver.disconnect();
-    // Document Change Events
     doc.disconnect(this);
-    // Clean-up
-    this.surfaceSelection = null;
-    // unregister from controller
+    this.domSelection = null;
+    this.domObserver.disconnect();
     this.getController().unregisterSurface(this);
   };
 
@@ -149,12 +135,24 @@ Surface.Prototype = function() {
     };
   };
 
-  this.getCommand = function(commandName) {
-    return this.commandRegistry.get(commandName);
+  this.getName = function() {
+    return this.name;
   };
 
-  this.getTextTypes = function() {
-    return this.textTypes || [];
+  this.isEditable = function() {
+    return (this.props.editing === "full" ||  this.props.editing === undefined);
+  };
+
+  this.isSelectable = function() {
+    return (this.props.editing === "selection" ||  this.props.editing === "full");
+  };
+
+  this.isReadonly = function() {
+    return this.props.editing === "readonly";
+  };
+
+  this.getCommand = function(commandName) {
+    return this.commandRegistry.get(commandName);
   };
 
   this.executeCommand = function(commandName, args) {
@@ -163,7 +161,6 @@ Surface.Prototype = function() {
       console.warn('command', commandName, 'not registered on controller');
       return;
     }
-
     // Run command
     var info = cmd.execute(args);
     if (info) {
@@ -175,82 +172,42 @@ Surface.Prototype = function() {
     }
   };
 
-  // Used by TextTool
-  // TODO: Filter by enabled commands for this Surface
-  this.getTextCommands = function() {
-    var textCommands = {};
-    this.commandRegistry.each(function(cmd) {
-      if (cmd.constructor.static.textTypeName) {
-        textCommands[cmd.constructor.static.name] = cmd;
-      }
-    });
-    return textCommands;
-  };
-
-  this.getName = function() {
-    return this.name;
-  };
-
   this.getElement = function() {
     return this.el;
   };
 
   this.getController = function() {
-    return (this.context.controller ||
-      // used in test-suite
-      this.props.controller);
+    return this.controller;
   };
 
   this.getDocument = function() {
-    // TODO: decide where the doc should come from
-    // I am against abusing the controller for everything
-    // it should only take over tasks which can not be solved otherwise
-    // Providing the doc is a bad example.
-    if (this.doc) {
-      return this.doc;
-    }
-    var doc =  this.context.doc;
-    // Leaving this here for legacy reason
-    if (!doc) {
-      console.warn('TODO: provide the doc instance via context (or as prop).');
-      var controller = this.getController();
-      if (controller) {
-        doc = controller.getDocument();
-      }
-    }
-    if (!doc) {
-      throw new Error('Could not retrieve document.');
-    }
-    this.doc = doc;
-    return doc;
+    return this.documentSession.getDocument();
   };
 
   this.getDocumentSession = function() {
     return this.documentSession;
   };
 
-  // Must be implemented by container surfaces
-  this.getContainer = function() {};
-
-  this.getContainerId = function() {};
-
   this.enable = function() {
-    if (this.enableContentEditable) {
-      this.el.prop('contentEditable', 'true');
-    }
+    // As opposed to a ContainerEditor, a regular Surface
+    // is not a ContentEditable -- but every contained TextProperty
+    console.log('TODO: enable all contained TextProperties');
     this.enabled = true;
+  };
+
+  this.disable = function() {
+    console.log('TODO: disable all contained TextProperties');
+    this.enabled = false;
   };
 
   this.isEnabled = function() {
     return this.enabled;
   };
 
-  this.disable = function() {
-    if (this.enableContentEditable) {
-      this.el.removeAttr('contentEditable');
-    }
-    this.enabled = false;
+  this.isContainerEditor = function() {
+    return false;
   };
+
 
   /**
     Run a transformation as a transaction properly configured for this surface.
@@ -333,15 +290,15 @@ Surface.Prototype = function() {
   this.setSelectionFromEvent = function(evt) {
     this.skipNextFocusEvent = true;
     var domRange = Surface.getDOMRangeFromEvent(evt);
-    var sel = this.surfaceSelection.getSelectionFromDOMRange(domRange);
+    var sel = this.domSelection.getSelectionFromDOMRange(domRange);
     this.setSelection(sel);
   };
 
   this.rerenderDomSelection = function() {
-    if (this.surfaceSelection) {
-      var surfaceSelection = this.surfaceSelection;
+    if (this.domSelection) {
+      var domSelection = this.domSelection;
       var sel = this.getSelection();
-      surfaceSelection.setSelection(sel);
+      domSelection.setSelection(sel);
     }
   };
 
@@ -349,12 +306,57 @@ Surface.Prototype = function() {
     return this.getElement().querySelector('*[data-id='+nodeId+']');
   };
 
-  this.getLogger = function() {
-    return this.logger;
+  /* Editing behavior */
+  // In a regular Surface all text properties are treated independently
+  // like in a form
+
+  /**
+    Selects all text
+  */
+  this.selectAll = function() {
+    var doc = this.getDocument();
+    var sel = this.getSelection();
+    if (sel.isPropertySelection()) {
+      var path = sel.path;
+      var text = doc.get(path);
+      sel = doc.createSelection({
+        type: 'property',
+        path: path,
+        startOffset: 0,
+        endOffset: text.length
+      });
+      this.setSelection(sel);
+    }
   };
 
-  this.getTextPropertyManager = function() {
-    return this.textPropertyManager;
+  /**
+    Performs an {@link model/transform/insertText} transformation
+  */
+  this.insertText = function(tx, args) {
+    var sel = args.selection;
+    if (sel.isPropertySelection() || sel.isContainerSelection()) {
+      return insertText(tx, args);
+    }
+  };
+
+  /**
+    Performs a {@link model/transform/deleteSelection} transformation
+  */
+  this.delete = function(tx, args) {
+    return deleteSelection(tx, args);
+  };
+
+  // No breaking in properties, insert softbreak instead
+  this.break = function(tx, args) {
+    return this.softBreak(tx, args);
+  };
+
+  /**
+    Inserts a soft break
+  */
+  this.softBreak = function(tx, args) {
+    args.text = "\n";
+    return this.insertText(tx, args);
   };
 
   /**
@@ -366,7 +368,28 @@ Surface.Prototype = function() {
     return result.doc;
   };
 
-  // ### event handlers
+  /**
+    Performs a {@link model/transform/paste} transformation
+  */
+  this.paste = function(tx, args) {
+    // TODO: for now only plain text is inserted
+    // We could do some stitching however, preserving the annotations
+    // received in the document
+    if (args.text) {
+      return this.insertText(tx, args);
+    }
+  };
+
+  /* Event handlers */
+
+  this.onDocumentChange = function(change) {
+    change.updated.forEach(function(path) {
+      var comp = this._textProperties[path];
+      if (comp) {
+        comp.rerender();
+      }
+    }.bind(this));
+  };
 
   /*
    * Handle document key down events.
@@ -444,7 +467,7 @@ Surface.Prototype = function() {
     this.skipNextObservation=true;
     this.transaction(function(tx, args) {
       // trying to remove the DOM selection to reduce flickering
-      this.surfaceSelection.clear();
+      this.domSelection.clear();
       args.text = event.data;
       return this.insertText(tx, args);
     }.bind(this));
@@ -477,7 +500,7 @@ Surface.Prototype = function() {
     if (character.length>0) {
       this.transaction(function(tx, args) {
         // trying to remove the DOM selection to reduce flickering
-        this.surfaceSelection.clear();
+        this.domSelection.clear();
         args.text = character;
         return this.insertText(tx, args);
       }.bind(this));
@@ -519,13 +542,11 @@ Surface.Prototype = function() {
     // then the handler needs to kick in and recover a persisted selection or such
     this.skipNextFocusEvent = true;
     // Bind mouseup to the whole document in case of dragging out of the surface
-    this.dragging = true;
     this.$document.one('mouseup', this.onMouseUp);
   };
 
   this.onMouseUp = function() {
     // ... and unbind the temporary handler
-    this.dragging = false;
     this.setFocused(true);
     var self = this;
     var textPropertyManager = this.textPropertyManager;
@@ -534,8 +555,8 @@ Surface.Prototype = function() {
     // holds the old value, and is set to the correct selection after this
     // being called.
     setTimeout(function() {
-      if (self.surfaceSelection) {
-        var sel = self.surfaceSelection.getSelection();
+      if (self.domSelection) {
+        var sel = self.domSelection.getSelection();
         if (textPropertyManager.hasSelection()) {
           textPropertyManager.removeSelection();
           self.setSelection(sel);
@@ -544,14 +565,6 @@ Surface.Prototype = function() {
         }
       }
     });
-  };
-
-  this.onMouseMove = function() {
-    if (this.dragging) {
-      // TODO: do we want that?
-      // update selection during dragging
-      // this._setModelSelection(this.surfaceSelection.getSelection());
-    }
   };
 
   this.onDomMutations = function() {
@@ -600,14 +613,15 @@ Surface.Prototype = function() {
         this.textPropertyManager.removeSelection();
         this.rerenderDomSelection();
       } else {
-        var sel = this.surfaceSelection.getSelection();
+        var sel = this.domSelection.getSelection();
         this.setFocused(true);
         this.setSelection(sel);
       }
     }.bind(this));
   };
 
-  // ## internal implementations
+
+  // Internal implementations
 
   this._initializeCommandRegistry = function(commands) {
     var commandRegistry = new Registry();
@@ -631,9 +645,9 @@ Surface.Prototype = function() {
       self._updateModelSelection(options);
       // We could rerender the selection, to make sure the DOM is representing
       // the model selection
-      // TODO: ATM, the SurfaceSelection is not good enough in doing this, event.g., there
+      // TODO: ATM, the DOMSelection is not good enough in doing this, event.g., there
       // are situations where one can not use left/right navigation anymore, as
-      // SurfaceSelection will always decides to choose the initial positition,
+      // DOMSelection will always decides to choose the initial positition,
       // which means lockin.
       // self.rerenderDomSelection();
     });
@@ -656,8 +670,8 @@ Surface.Prototype = function() {
   };
 
   this._isDisposed = function() {
-    // HACK: if surfaceSelection === null, this surface has been disposed
-    return !this.surfaceSelection;
+    // HACK: if domSelection === null, this surface has been disposed
+    return !this.domSelection;
   };
 
   this._handleSpaceKey = function(event) {
@@ -665,7 +679,7 @@ Surface.Prototype = function() {
     event.stopPropagation();
     this.transaction(function(tx, args) {
       // trying to remove the DOM selection to reduce flickering
-      this.surfaceSelection.clear();
+      this.domSelection.clear();
       args.text = " ";
       return this.insertText(tx, args);
     }.bind(this));
@@ -720,7 +734,7 @@ Surface.Prototype = function() {
   };
 
   this._updateModelSelection = function(options) {
-    this._setModelSelection(this.surfaceSelection.getSelection(options));
+    this._setModelSelection(this.domSelection.getSelection(options));
   };
 
   /**
@@ -769,31 +783,19 @@ Surface.Prototype = function() {
     return [];
   };
 
-  this.onDocumentChange = function(change) {
-    console.log('Surface.onDocumentChange')
-    // record changes to text properties which have been rendered already
-    var dirtyProperties = this._recordChanges(change);
-    this._updateTextProperties(dirtyProperties);
-  };
-
-  this._recordChanges = function(change) {
-    var dirtyProperties = {};
-    for (var i = 0; i < change.ops.length; i++) {
-      var op = change.ops[i];
-      if ( (op.type === "update" || op.type == "set") ) {
-        dirtyProperties[op.path] = true;
-      }
+  // TODO: we could integrate container node rendering into this helper
+  this._renderNode = function(nodeId) {
+    var doc = this.getDocument();
+    var node = doc.get(nodeId);
+    var componentRegistry = this.context.componentRegistry || this.props.componentRegistry;
+    var ComponentClass = componentRegistry.get(node.type);
+    if (!ComponentClass) {
+      console.error('Could not resolve a component for type: ' + node.type);
+      ComponentClass = UnsupportedNode;
     }
-    return dirtyProperties;
-  };
-
-  this._updateTextProperties = function(properties) {
-    each(properties, function(path) {
-      var comp = this._textProperties[path];
-      if (comp) {
-        // TODO: alternatively use extendProps({highlights, fragments})
-        comp.rerender();
-      }
+    return $$(ComponentClass, {
+      doc: doc,
+      node: node
     });
   };
 

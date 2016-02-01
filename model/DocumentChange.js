@@ -147,7 +147,7 @@ DocumentChange.Prototype = function() {
   // ===============================================
 
   this.isAffected = function(path) {
-    return !!this.updated.get(path);
+    return !!this.updated[path];
   };
 
   this.isUpdated = this.isAffected;
