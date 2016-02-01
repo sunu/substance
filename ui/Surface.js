@@ -1,6 +1,8 @@
 'use strict';
 
-var _ = require('../util/helpers');
+var isObject = require('lodash/lang/isObject');
+var isEqual = require('lodash/lang/isEqual');
+var each = require('lodash/collection/each');
 var Registry = require('../util/Registry');
 var SurfaceSelection = require('./SurfaceSelection');
 var Document = require('../model/Document');
@@ -24,26 +26,24 @@ function Surface() {
   Component.apply(this, arguments);
 
   var controller = this.getController();
-  var doc =  this.getDocument();
 
   // TODO: we need a DocumentSession instance
 
   if (!controller) {
     throw new Error('Surface needs a valid controller');
   }
-  if (!doc) {
-    throw new Error('No doc provided');
-  }
   if (!this.props.name) {
     throw new Error('No name provided');
   }
 
-  this.docSession = controller.getDocumentSession();
+  this.documentSession = controller.getDocumentSession();
   this.name = this.props.name;
   this.clipboard = new Clipboard(this);
 
+  var doc = this.documentSession.getDocument();
+
   // HACK: we need to listen to mousup on document
-  // to catch events outside the surface, mouseup event must be listened on $document
+  // to catch events outside the surface
   this.$document = $(window.document);
   this.onMouseUp = this.onMouseUp.bind(this);
   // <----
@@ -60,7 +60,18 @@ function Surface() {
   this.undoEnabled = true;
   this.textTypes = this.props.textTypes;
   this._initializeCommandRegistry(this.props.commands);
+
   controller.registerSurface(this);
+
+  // a registry for TextProperties which allows us to dispatch changes
+  this._textProperties = {};
+  this._annotations = {};
+
+  // true if the ContentEditable is used for selection rendering
+  // otherwise the selection is rendered by us
+  this._DOMSelection = false;
+
+  doc.on('document:changed', this.onDocumentChange, this);
 }
 
 Surface.Prototype = function() {
@@ -215,7 +226,7 @@ Surface.Prototype = function() {
   };
 
   this.getDocumentSession = function() {
-    return this.docSession;
+    return this.documentSession;
   };
 
   // Must be implemented by container surfaces
@@ -272,10 +283,10 @@ Surface.Prototype = function() {
     ```
    */
   this.transaction = function(transformation) {
-    var docSession = this.docSession;
+    var documentSession = this.documentSession;
     var surfaceId = this.getName();
     // using the silent version, so that the selection:changed event does not get emitted too early
-    var change = docSession.transaction(function(tx, args) {
+    var change = documentSession.transaction(function(tx, args) {
       // `beforeState` is saved with the document operation and will be used
       // to recover the selection when using 'undo'.
       tx.before.surfaceId = surfaceId;
@@ -309,7 +320,7 @@ Surface.Prototype = function() {
   };
 
   this.getSelection = function() {
-    return this.docSession.getSelection();
+    return this.documentSession.getSelection();
   };
 
   /**
@@ -600,7 +611,7 @@ Surface.Prototype = function() {
 
   this._initializeCommandRegistry = function(commands) {
     var commandRegistry = new Registry();
-    _.each(commands, function(CommandClass) {
+    each(commands, function(CommandClass) {
       var cmd = new CommandClass(this);
       commandRegistry.add(CommandClass.static.name, cmd);
     }, this);
@@ -688,7 +699,7 @@ Surface.Prototype = function() {
   this._setSelection = function(sel, silent) {
     if (!sel) {
       sel = Selection.nullSelection;
-    } else if (_.isObject(sel) && !(sel instanceof Selection)) {
+    } else if (isObject(sel) && !(sel instanceof Selection)) {
       sel = this.getDocument().createSelection(sel);
     }
     if (silent) {
@@ -719,7 +730,7 @@ Surface.Prototype = function() {
    */
   this._setModelSelection = function(sel, silent) {
     sel = sel || Document.nullSelection;
-    this.docSession.setSelection(sel);
+    this.documentSession.setSelection(sel);
     if (!silent) {
       this.emit('selection:changed', sel, this);
     }
@@ -736,6 +747,56 @@ Surface.Prototype = function() {
       endOffset: text.length
     }));
   };
+
+  // internal API for TextProperties to enable dispatching
+  // TextProperty components are registered via path
+  // Annotations are just registered via path for lookup, not as instances
+
+  this._registerTextProperty = function(path, component) {
+    this._textProperties[path] = component;
+  };
+
+  this._unregisterTextProperty = function(path) {
+    delete this._textProperties[path];
+    each(this._annotations, function(_path, id) {
+      if (isEqual(path, _path)) {
+        delete this._annotations[id];
+      }
+    }, this);
+  };
+
+  this._getFragments = function(path) {
+    return [];
+  };
+
+  this.onDocumentChange = function(change) {
+    console.log('Surface.onDocumentChange')
+    // record changes to text properties which have been rendered already
+    var dirtyProperties = this._recordChanges(change);
+    this._updateTextProperties(dirtyProperties);
+  };
+
+  this._recordChanges = function(change) {
+    var dirtyProperties = {};
+    for (var i = 0; i < change.ops.length; i++) {
+      var op = change.ops[i];
+      if ( (op.type === "update" || op.type == "set") ) {
+        dirtyProperties[op.path] = true;
+      }
+    }
+    return dirtyProperties;
+  };
+
+  this._updateTextProperties = function(properties) {
+    each(properties, function(path) {
+      var comp = this._textProperties[path];
+      if (comp) {
+        // TODO: alternatively use extendProps({highlights, fragments})
+        comp.rerender();
+      }
+    });
+  };
+
 };
 
 Component.extend(Surface);

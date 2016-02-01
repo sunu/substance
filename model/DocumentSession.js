@@ -42,6 +42,10 @@ function DocumentSession(doc, options) {
 
 DocumentSession.Prototype = function() {
 
+  this.getDocument = function() {
+    return this.doc;
+  };
+
   this.getSelection = function() {
     return this.selection;
   };
@@ -133,6 +137,12 @@ DocumentSession.Prototype = function() {
       // TODO: as an optimization we could rebase the history lazily
       DocumentChange.transform(this.doneChanges, change);
       DocumentChange.transform(this.undoneChanges, change);
+      // TODO: transform selection
+      var sel = DocumentChange.transformSelection(this.selection, change);
+      if (!sel.equals(this.selection)) {
+        this.selection = sel;
+        this.emit('selection:changed', this.selection, this);
+      }
     }
   };
 

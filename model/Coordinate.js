@@ -54,6 +54,14 @@ Coordinate.Prototype = function() {
     return this.offset;
   };
 
+  this.toJSON = function() {
+    return {
+      path: this.path,
+      offset: this.offset,
+      after: this.after
+    };
+  };
+
 };
 
 oo.initClass(Coordinate);

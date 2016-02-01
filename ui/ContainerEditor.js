@@ -64,6 +64,8 @@ function ContainerEditor() {
 
 ContainerEditor.Prototype = function() {
 
+  var _super = Object.getPrototypeOf(this);
+
   // Create a first text element
   this.onCreateText = function() {
     var newSel;
@@ -131,6 +133,8 @@ ContainerEditor.Prototype = function() {
   };
 
   this.onDocumentChange = function(change) {
+    _super.onDocumentChange.call(this, change);
+
     if (change.isAffected([this.props.containerId, 'nodes'])) {
       for (var i = 0; i < change.ops.length; i++) {
         var op = change.ops[i];

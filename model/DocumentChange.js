@@ -1,5 +1,6 @@
 'use strict';
 
+var isEqual = require('lodash/lang/isEqual');
 var isObject = require('lodash/lang/isObject');
 var isArray = require('lodash/lang/isArray');
 var map = require('lodash/collection/map');
@@ -8,6 +9,8 @@ var uuid = require('../util/uuid');
 var PathAdapter = require('../util/PathAdapter');
 var OperationSerializer = require('./data/OperationSerializer');
 var ObjectOperation = require('./data/ObjectOperation');
+var PropertySelection = require('./PropertySelection');
+var ContainerSelection = require('./ContainerSelection');
 
 var PROVISIONAL = 1;
 var PENDING = 2;
@@ -237,6 +240,50 @@ DocumentChange.transform = function(A, B) {
       ObjectOperation.transform(b_op, a_op, {inplace: true});
     }
   }
+};
+
+
+function _transformCoordinate(coor, op) {
+  if (!isEqual(op.path, coor.path)) return coor;
+  if (op.type === 'update' && op.propertyType === 'string') {
+    var diff = op.diff;
+    if (diff.isInsert() && diff.pos <= coor.offset) {
+      coor.offset += diff.str.length;
+    } else if (diff.isDelete() && diff.pos <= coor.offset) {
+      coor.offset = Math.max(diff.pos, coor.offset - diff.str.length);
+    }
+  }
+  return coor;
+}
+
+// PRELIMINARY
+// This needs a greater refactor, introducing Coordinates as built-in types
+// which are considered together with operation transformations
+DocumentChange.transformSelection = function(sel, A) {
+  if (!sel || (!sel.isPropertySelection() && !sel.isContainerSelection()) ) {
+    return sel;
+  }
+  var start = sel.range.start.toJSON();
+  var end = sel.range.end.toJSON();
+  var ops = A.ops;
+
+  ops.forEach(function(op) {
+    start = _transformCoordinate(start, op);
+    end = _transformCoordinate(end, op);
+  });
+
+  if (sel.isPropertySelection()) {
+    return new PropertySelection({ path: start.path, startOffset: start.offset, endOffset: end.offset});
+  } else {
+    return new ContainerSelection({
+      containerId: sel.containerId,
+      startPath: start.path,
+      startOffset: start.offset,
+      endPath: end.path,
+      endOffset: end.offset
+    });
+  }
+
 };
 
 module.exports = DocumentChange;
