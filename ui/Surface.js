@@ -285,7 +285,11 @@ Surface.Prototype = function() {
    * Set the model selection and update the DOM selection accordingly
    */
   this.setSelection = function(sel) {
-    sel.surfaceId = this.name;
+    // storing the surface id so that we can associate
+    // the selection with this surface later
+    if (!sel.isNull()) {
+      sel.surfaceId = this.name;
+    }
     this._setSelection(sel);
   };
 
