@@ -52,6 +52,11 @@ DocumentSession.Prototype = function() {
 
   this.setSelection = function(sel) {
     this.selection = sel;
+    this.emit('selection:changed', sel, this);
+    // For those who are just interested in selection changes
+    // done via this method -- as opposed to implicit changes
+    // when via DocumentChange
+    this.emit('selection:changed:explicitly', sel, this);
   };
 
   this.canUndo = function() {

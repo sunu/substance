@@ -6,7 +6,6 @@ var isEqual = require('lodash/lang/isEqual');
 var each = require('lodash/collection/each');
 var platform = require('../util/platform');
 var Registry = require('../util/Registry');
-var Document = require('../model/Document');
 var Selection = require('../model/Selection');
 var copySelection = require('../model/transform/copySelection');
 var insertText = require('../model/transform/insertText');
@@ -35,7 +34,7 @@ function Surface() {
   this.documentSession = this.controller.getDocumentSession();
   this.name = this.props.name;
   if (!this.name) {
-    throw new Error('No name provided');
+    throw new Error('No id provided');
   }
 
   this.clipboard = new Clipboard(this);
@@ -66,6 +65,9 @@ function Surface() {
   this._annotations = {};
 
   doc.on('document:changed', this.onDocumentChange, this);
+  // Only react to changes done via documentSession.setSelection
+  // in the other case we are dealing with it ourself
+  this.documentSession.on('selection:changed:explicitly', this.onSelectionChange, this);
 }
 
 Surface.Prototype = function() {
@@ -271,7 +273,6 @@ Surface.Prototype = function() {
       this.isFocused = val;
       // console.log('Surface blur:', this.__id__);
       // when a surface gets blurred a persisted selection will be removed
-      this.textPropertyManager.removeSelection();
       this.emit('blur', this);
     }
   };
@@ -284,6 +285,7 @@ Surface.Prototype = function() {
    * Set the model selection and update the DOM selection accordingly
    */
   this.setSelection = function(sel) {
+    sel.surfaceId = this.name;
     this._setSelection(sel);
   };
 
@@ -307,8 +309,9 @@ Surface.Prototype = function() {
   };
 
   /* Editing behavior */
-  // In a regular Surface all text properties are treated independently
-  // like in a form
+
+  /* Note: In a regular Surface all text properties are treated independently
+     like in a form */
 
   /**
     Selects all text
@@ -389,6 +392,13 @@ Surface.Prototype = function() {
         comp.rerender();
       }
     }.bind(this));
+    if (this.domSelection) {
+      this.rerenderDomSelection();
+    }
+  };
+
+  this.onSelectionChange = function() {
+    this.rerenderDomSelection();
   };
 
   /*
@@ -548,23 +558,16 @@ Surface.Prototype = function() {
   this.onMouseUp = function() {
     // ... and unbind the temporary handler
     this.setFocused(true);
-    var self = this;
-    var textPropertyManager = this.textPropertyManager;
     // ATTENTION: this delay is necessary for cases the user clicks
     // into an existing selection. In this case the window selection still
     // holds the old value, and is set to the correct selection after this
     // being called.
     setTimeout(function() {
-      if (self.domSelection) {
-        var sel = self.domSelection.getSelection();
-        if (textPropertyManager.hasSelection()) {
-          textPropertyManager.removeSelection();
-          self.setSelection(sel);
-        } else {
-          self._setModelSelection(sel);
-        }
+      if (this.domSelection) {
+        var sel = this.domSelection.getSelection();
+        this.setSelection(sel);
       }
-    });
+    }.bind(this));
   };
 
   this.onDomMutations = function() {
@@ -610,7 +613,6 @@ Surface.Prototype = function() {
       if (this.skipNextFocusEvent) return;
       // console.log('... handling native focus on surface', this.__id__);
       if (this.isFocused){
-        this.textPropertyManager.removeSelection();
         this.rerenderDomSelection();
       } else {
         var sel = this.domSelection.getSelection();
@@ -711,18 +713,17 @@ Surface.Prototype = function() {
   };
 
   this._setSelection = function(sel, silent) {
+    // TODO: get rid of this magic
     if (!sel) {
       sel = Selection.nullSelection;
     } else if (isObject(sel) && !(sel instanceof Selection)) {
       sel = this.getDocument().createSelection(sel);
     }
+    // TODO: do we still need this?
     if (silent) {
-      this._setModelSelection(sel, silent);
-    } else {
-      if (this._setModelSelection(sel)) {
-        this.rerenderDomSelection();
-      }
+      //
     }
+    this.documentSession.setSelection(sel);
     // Since we allow the surface be blurred natively when clicking
     // on tools we now need to make sure that the element is focused natively
     // when we set the selection
@@ -734,21 +735,7 @@ Surface.Prototype = function() {
   };
 
   this._updateModelSelection = function(options) {
-    this._setModelSelection(this.domSelection.getSelection(options));
-  };
-
-  /**
-   * Set the model selection only (without DOM selection update).
-   *
-   * Used internally if we derive the model selection from the DOM selcection.
-   */
-  this._setModelSelection = function(sel, silent) {
-    sel = sel || Document.nullSelection;
-    this.documentSession.setSelection(sel);
-    if (!silent) {
-      this.emit('selection:changed', sel, this);
-    }
-    return true;
+    this.setSelection(this.domSelection.getSelection(options));
   };
 
   this._selectProperty = function(path) {
