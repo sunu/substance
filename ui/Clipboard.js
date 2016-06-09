@@ -298,20 +298,20 @@ Clipboard.Prototype = function() {
     // TODO: the clipboard importer should make sure
     // that the container exists
     var content = null;
-    var $html = $(html);
-    var str = '';
-    // wrap tables in zinx markup
-    $html.each(function(){
-      self._cleanInlineStyle(this);
-      if(this.nodeName === 'TABLE') {
-        str = str + '<div class="zx-tablewrapper">' + this.outerHTML + '</div>';
-      } else {
-        str = str + (this.outerHTML || '');
-      }
-    });
-    str = str + '<p></p>';
+//    var $html = $(html);
+//    var str = '';
+//    // wrap tables in zinx markup
+//    $html.each(function(){
+//      self._cleanInlineStyle(this);
+//      if(this.nodeName === 'TABLE') {
+//        str = str + '<div class="zx-tablewrapper">' + this.outerHTML + '</div>';
+//      } else {
+//        str = str + (this.outerHTML || '');
+//      }
+//    });
+//    str = str + '<p></p>';
     try {
-      content = this.htmlImporter.importDocument(str);
+      content = this.htmlImporter.importDocument(html);
     } catch (err) {
       return false;
     }
