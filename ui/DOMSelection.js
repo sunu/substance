@@ -70,6 +70,11 @@ DOMSelection.Prototype = function() {
       return;
     }
     var start = startComp.getDOMCoordinate(sel.startOffset);
+    // Hack: if the startOffset is off by 1, adjust it to the correct value
+    if (start === null){
+      sel.startOffset = sel.startOffset - 1;
+      start = startComp.getDOMCoordinate(sel.startOffset);
+    }
     var end;
     if (sel.isCollapsed()) {
       end = start;
