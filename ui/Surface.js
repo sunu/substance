@@ -393,7 +393,8 @@ Surface.Prototype = function() {
       if (change.after.surfaceId === this.getName()) {
         if (!this.isNativeFocused) {
           this.skipNextFocusEvent = true;
-          this.focus();
+          // Commenting it out for now to prevent the editor from scrolling to the top
+          // this.focus();
         }
         this.rerenderDomSelection();
       }
