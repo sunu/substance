@@ -94,7 +94,7 @@ DOMSelection.Prototype = function() {
       var el = document.createElement("span");
       el.id = 'curr-pos-span';
       wRange.insertNode(el);
-      if(!isElementInViewport(el)){
+      if((!isElementInViewport(el)) && (!window.imageEditingMode)){
         var offsetParent = $("#curr-pos-span").offsetParent()[0];
         var scrollAdjustment = 200;
         if ($('#curr-pos-span')[0].offsetTop < offsetParent.scrollTop){
